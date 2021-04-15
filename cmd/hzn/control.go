@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/horizon/pkg/config"
@@ -54,15 +55,14 @@ func (c *controlServer) Run(args []string) int {
 	L.Info("log level configured", "level", level)
 	L.Trace("starting server")
 
-	vcfg := api.DefaultConfig()
-
-	vc, err := api.NewClient(vcfg)
+	vaultCfg := api.DefaultConfig()
+	vaultClient, err := api.NewClient(vaultCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// If we have token AND this is kubernetes, then let's try to get a token
-	if vc.Token() == "" {
+	if vaultClient.Token() == "" {
 		f, err := os.Open("/var/run/secrets/kubernetes.io/serviceaccount/token")
 		if err == nil {
 			L.Info("attempting to login to vault via kubernetes auth")
@@ -74,7 +74,7 @@ func (c *controlServer) Run(args []string) int {
 
 			f.Close()
 
-			sec, err := vc.Logical().Write("auth/kubernetes/login", map[string]interface{}{
+			sec, err := vaultClient.Logical().Write("auth/kubernetes/login", map[string]interface{}{
 				"role": "horizon",
 				"jwt":  string(bytes.TrimSpace(data)),
 			})
@@ -86,15 +86,17 @@ func (c *controlServer) Run(args []string) int {
 				log.Fatal("unable to login to get token")
 			}
 
-			vc.SetToken(sec.Auth.ClientToken)
-
+			vaultClient.SetToken(sec.Auth.ClientToken)
 			L.Info("retrieved token from vault", "accessor", sec.Auth.Accessor)
 
 			go func() {
 				tic := time.NewTicker(time.Hour)
 				for {
 					<-tic.C
-					vc.Auth().Token().RenewSelf(86400)
+					_, err := vaultClient.Auth().Token().RenewSelf(86400)
+					if err != nil {
+						log.Printf("unable to renew Vault token: %v", err)
+					}
 				}
 			}()
 		}
@@ -110,38 +112,53 @@ func (c *controlServer) Run(args []string) int {
 		log.Fatal(err)
 	}
 
-	sess := session.New()
-
 	bucket := os.Getenv("S3_BUCKET")
 	if bucket == "" {
 		log.Fatal("S3_BUCKET not set")
 	}
+
+	useAWS := os.Getenv("USE_AWS") != "0"
+
+	var sess *session.Session = nil
+	if useAWS {
+		sess, err = session.NewSession(&aws.Config{})
+		if err != nil {
+			log.Fatalf("unable to initialize AWS: %v", err)
+		}
+	}
+
 
 	domain := os.Getenv("HUB_DOMAIN")
 	if domain == "" {
 		log.Fatal("missing HUB_DOMAIN")
 	}
 
-	staging := os.Getenv("LETSENCRYPT_STAGING") != ""
+	useTLSManager := os.Getenv("USE_TLS_MANAGER") != "0"
 
-	tlsmgr, err := tlsmanage.NewManager(tlsmanage.ManagerConfig{
-		L:           L,
-		Domain:      domain,
-		VaultClient: vc,
-		Staging:     staging,
-	})
-	if err != nil {
-		log.Fatal(err)
+	var tlsmgr *tlsmanage.Manager = nil
+	if useTLSManager {
+		staging := os.Getenv("LETSENCRYPT_STAGING") != ""
+		tlsmgr, err = tlsmanage.NewManager(tlsmanage.ManagerConfig{
+			L:           L,
+			Domain:      domain,
+			VaultClient: vaultClient,
+			Staging:     staging,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	zoneId := os.Getenv("ZONE_ID")
-	if zoneId == "" {
-		log.Fatal("missing ZONE_ID")
-	}
+	if useAWS && useTLSManager {
+		zoneId := os.Getenv("ZONE_ID")
+		if zoneId == "" {
+			log.Fatal("missing ZONE_ID")
+		}
 
-	err = tlsmgr.SetupRoute53(sess, zoneId)
-	if err != nil {
-		log.Fatal(err)
+		err = tlsmgr.SetupRoute53(sess, zoneId)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	regTok := os.Getenv("REGISTER_TOKEN")
@@ -166,9 +183,14 @@ func (c *controlServer) Run(args []string) int {
 
 	ctx := hclog.WithContext(context.Background(), L)
 
-	cert, key, err := tlsmgr.HubMaterial(ctx)
-	if err != nil {
-		log.Fatal(err)
+	var cert []byte = nil
+	var key []byte = nil
+
+	if tlsmgr != nil {
+		cert, key, err = tlsmgr.HubMaterial(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	lm, err := control.NewConsulLockManager(ctx)
@@ -183,7 +205,7 @@ func (c *controlServer) Run(args []string) int {
 		RegisterToken: regTok,
 		OpsToken:      opsTok,
 
-		VaultClient: vc,
+		VaultClient: vaultClient,
 		VaultPath:   "hzn-k1",
 		KeyId:       "k1",
 
@@ -211,19 +233,21 @@ func (c *controlServer) Run(args []string) int {
 		hubDomain = hubDomain[2:]
 	}
 
-	s.SetHubTLS(cert, key, hubDomain)
+	if tlsmgr != nil {
+		s.SetHubTLS(cert, key, hubDomain)
 
-	// So that when they are refreshed by the background job, we eventually pick
-	// them up. Hubs are also refreshing their config on an hourly basis so they'll
-	// end up picking up the new TLS material that way too.
-	go periodic.Run(ctx, time.Hour, func() {
-		cert, key, err := tlsmgr.RefreshFromVault()
-		if err != nil {
-			L.Error("error refreshing hub certs from vault")
-		} else {
-			s.SetHubTLS(cert, key, hubDomain)
-		}
-	})
+		// So that when they are refreshed by the background job, we eventually pick
+		// them up. Hubs are also refreshing their config on an hourly basis so they'll
+		// end up picking up the new TLS material that way too.
+		go periodic.Run(ctx, time.Hour, func() {
+			cert, key, err := tlsmgr.RefreshFromVault()
+			if err != nil {
+				L.Error("error refreshing hub certs from vault")
+			} else {
+				s.SetHubTLS(cert, key, hubDomain)
+			}
+		})
+	}
 
 	gs := grpc.NewServer()
 	pb.RegisterControlServicesServer(gs, s)
