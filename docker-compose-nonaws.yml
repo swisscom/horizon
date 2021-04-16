@@ -1,0 +1,34 @@
+version: "3"
+
+services:
+  postgres:
+    image: "docker.mirror.hashicorp.services/postgres:12.3"
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=noop
+      - POSTGRES_PASSWORD=postgres
+  minio:
+    image: minio/minio:latest
+    environment:
+      - MINIO_ROOT_USER=oiwh71jPeMTLGX5h9YuPorO7W31ay
+      - MINIO_ROOT_PASSWORD=OgETNy1QNiHXH3tmfLxi4HG02a
+    ports:
+      - "9000:9000"
+    command:
+      - minio
+      - server
+
+  vault:
+    image: docker.mirror.hashicorp.services/vault
+    ports:
+      - 8200:8200
+    command: vault server -dev -dev-root-token-id=hznroot
+    environment:
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+
+  consul:
+    image: docker.mirror.hashicorp.services/consul
+    ports:
+      - 8500:8500
+    command: consul agent -dev -client=0.0.0.0

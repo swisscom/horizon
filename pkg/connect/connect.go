@@ -104,7 +104,7 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
-func (s *Session) ConnecToAccountService(acc *pb.Account, labels *pb.LabelSet) (*Conn, error) {
+func (s *Session) ConnectToAccountService(acc *pb.Account, labels *pb.LabelSet) (*Conn, error) {
 	stream, err := s.session.OpenStream()
 	if err != nil {
 		return nil, err
@@ -144,7 +144,7 @@ func (s *Session) ConnecToAccountService(acc *pb.Account, labels *pb.LabelSet) (
 }
 
 func (s *Session) ConnectToService(labels *pb.LabelSet) (*Conn, error) {
-	return s.ConnecToAccountService(nil, labels)
+	return s.ConnectToAccountService(nil, labels)
 }
 
 func (c *Conn) ReadMarshal(v wire.Unmarshaller) (byte, error) {

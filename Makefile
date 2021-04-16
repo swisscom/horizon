@@ -79,11 +79,11 @@ pkg-docker: require-docker-vars ## Creates a docker container and uploads it to 
 dev-setup:
 	docker-compose exec -- postgres psql --username postgres -c "CREATE DATABASE horizon_dev;" || true
 	DATABASE_URL=postgres://postgres:postgres@localhost/horizon_dev?sslmode=disable MIGRATIONS_PATH=./pkg/control/migrations  go run ./cmd/hzn/ migrate || true
-	docker-compose up -d
+	docker-compose -f docker-compose-nonaws.yml up -d
+	VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=hznroot vault secrets enable transit
 
 dev-start:
 	DATABASE_URL=postgres://postgres:postgres@localhost/horizon_dev?sslmode=disable go run ./cmd/hzn/ dev
-
 
 
 run-agent:

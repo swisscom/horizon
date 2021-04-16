@@ -34,7 +34,7 @@ type ActivityReader struct {
 	wg sync.WaitGroup
 }
 
-var pgActivityChannel = "activaty_added"
+var pgActivityChannel = "activity_added"
 
 func NewActivityReader(ctx context.Context, dbtype, conn string) (*ActivityReader, error) {
 	db, err := gorm.Open(dbtype, conn)

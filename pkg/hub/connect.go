@@ -212,7 +212,7 @@ func (h *Hub) connectToRemoteService(
 	// passing the service id we calculated here. The advantage is that things
 	// might have changed and the target has a better target (which would result
 	// in multiple relays).
-	conn, err := session.ConnecToAccountService(account, target.Labels)
+	conn, err := session.ConnectToAccountService(account, target.Labels)
 	if err != nil {
 		return nil, err
 	}
